@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NaeNae virtuel</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #aide {
+    position: fixed; left: 0; right: 0; bottom: 14px; text-align: center;
+    font: 14px/1.4 system-ui, sans-serif; color: #2a7f8c; opacity: .8;
+    transition: opacity .4s; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="aide">1 neutre · 2 joie · 3 triste · 4 colère · 5 surprise · 6 sommeil · 7 ennui · F plein écran · H masquer</div>
+
+<script>
+// ---------- Émotions : chaque émotion = quelques paramètres de forme ----------
+// sw/sh : largeur/hauteur des yeux (1 = normal)
+// cutIn/cutOut : paupière du haut, côté intérieur / extérieur (0 = ouvert, 1 = fermé)
+// cheek : joue qui rNaeNaente par le bas (0 = rien, 0.7 = yeux en « ^ »)
+const EMOTIONS = {
+  neutre:   { sw: 1,    sh: 1,    cutIn: 0,    cutOut: 0,    cheek: 0   },
+  joie:     { sw: 1.05, sh: 1,    cutIn: 0,    cutOut: 0,    cheek: 0.62 },
+  triste:   { sw: 1,    sh: 1,    cutIn: 0,    cutOut: 0.45, cheek: 0   },
+  colere:   { sw: 1,    sh: 0.95, cutIn: 0.5,  cutOut: 0.05, cheek: 0   },
+  surprise: { sw: 0.8,  sh: 1.3,  cutIn: 0,    cutOut: 0,    cheek: 0   },
+  sommeil:  { sw: 1.05, sh: 0.1,  cutIn: 0,    cutOut: 0,    cheek: 0   },
+  ennui:    { sw: 1.05, sh: 0.9,  cutIn: 0.45, cutOut: 0.45, cheek: 0   },
+};
+const TOUCHES = { '1':'neutre', '2':'joie', '3':'triste', '4':'colere', '5':'surprise', '6':'sommeil', '7':'ennui' };
+
+// ---------- État ----------
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const off = document.createElement('canvas');      // calque où on dessine les yeux (sans lueur)
+const octx = off.getContext('2d');
+
+let W = 0, H = 0, dpr = 1;
+let NaeNae = 'neutre', revertAt = 0;
+let p = { ...EMOTIONS.neutre };                    // paramètres actuels (animés)
+let look = { x: 0, y: 0 }, lookTarget = { x: 0, y: 0 };
+let lastAct = performance.now();
+let nextBlink = performance.now() + 2500, blinkStart = -1;
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = canvas.width = off.width = Math.round(innerWidth * dpr);
+  H = canvas.height = off.height = Math.round(innerHeight * dpr);
+}
+addEventListener('resize', resize);
+resize();
+
+// Changer d'émotion (ms > 0 : revient à « neutre » après ce délai).
+// Plus tard, le cerveau Python appellera cette fonction.
+function setEmotion(nom, ms = 0) {
+  if (!EMOTIONS[nom]) return;
+  NaeNae = nom;
+  revertAt = ms ? performance.now() + ms : 0;
+}
+window.setEmotion = setEmotion;
+
+// ---------- Entrées : souris et clavier ----------
+function activite() {
+  lastAct = performance.now();
+  if (NaeNae === 'ennui') setEmotion('neutre');
+}
+addEventListener('mousemove', e => {
+  lookTarget.x = (e.clientX / innerWidth - 0.5) * 2;
+  lookTarget.y = (e.clientY / innerHeight - 0.5) * 2;
+  activite();
+});
+addEventListener('mousedown', () => { setEmotion('joie', 1400); lastAct = performance.now(); });
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (TOUCHES[k]) { setEmotion(TOUCHES[k]); lastAct = performance.now(); }
+  if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  if (k === 'h') { const a = document.getElementById('aide'); a.style.opacity = a.style.opacity === '0' ? '.8' : '0'; }
+});
+
+// ---------- Dessin d'un œil ----------
+// side = -1 pour l'œil gauche, +1 pour le droit
+function dessinerOeil(cx, cy, w, h, side) {
+  const r = Math.min(w, h) * 0.42;
+  octx.save();
+  octx.translate(cx, cy);
+
+  // forme de base : rectangle arrondi
+  octx.fillStyle = '#3ee8ff';
+  octx.beginPath();
+  octx.roundRect(-w / 2, -h / 2, w, h, Math.min(r, h / 2));
+  octx.fill();
+
+  // on « gomme » des morceaux avec destination-out
+  octx.globalCompositeOperation = 'destination-out';
+  octx.fillStyle = '#000';
+
+  // paupière du haut (oblique : intérieur ≠ extérieur)
+  const xOut = side * (w / 2 + 3), xIn = -side * (w / 2 + 3);
+  const yIn = -h / 2 + p.cutIn * h, yOut = -h / 2 + p.cutOut * h;
+  if (p.cutIn > 0.01 || p.cutOut > 0.01) {
+    octx.beginPath();
+    octx.moveTo(xOut, yOut);
+    octx.lineTo(xIn, yIn);
+    octx.lineTo(xIn, -h);
+    octx.lineTo(xOut, -h);
+    octx.closePath();
+    octx.fill();
+  }
+
+  // joue qui remonte (yeux souriants)
+  if (p.cheek > 0.01) {
+    const rx = w * 0.8, ry = h * 0.6;
+    octx.beginPath();
+    octx.ellipse(0, h / 2 + ry - p.cheek * h, rx, ry, 0, 0, Math.PI * 2);
+    octx.fill();
+  }
+  octx.restore();
+}
+
+// ---------- Boucle d'animation ----------
+let t0 = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - t0) / 1000); t0 = now;
+
+  // retour automatique à neutre, et ennui si rien ne se passe
+  if (revertAt && now > revertAt) { NaeNae = 'neutre'; revertAt = 0; }
+  if (NaeNae === 'neutre' && now - lastAct > 15000) emo = 'ennui';
+
+  // lissage des paramètres vers l'émotion cible
+  const cible = EMOTIONS[NaeNae], k = 1 - Math.exp(-dt * 11);
+  for (const key in cible) p[key] += (cible[key] - p[key]) * k;
+  const kl = 1 - Math.exp(-dt * 8);
+  look.x += (lookTarget.x - look.x) * kl;
+  look.y += (lookTarget.y - look.y) * kl;
+
+  // clignement
+  let blink = 1;
+  if (blinkStart < 0 && now > nextBlink) blinkStart = now;
+  if (blinkStart >= 0) {
+    const u = (now - blinkStart) / 150;
+    if (u >= 1) { blinkStart = -1; nextBlink = now + 2000 + Math.random() * 3500; }
+    else blink = 1 - 0.94 * Math.sin(Math.PI * u);
+  }
+
+  // dimensions
+  const S = Math.min(W, H * 1.8) / 10;
+  const w = 1.6 * S * p.sw, h = 1.9 * S * p.sh * blink;
+  const gap = 2.4 * S;
+  const ox = look.x * 0.5 * S, oy = look.y * 0.35 * S;     // les yeux suivent la souris
+  const respiration = Math.sin(now / 900) * 0.04 * S;       // léger mouvement de vie
+
+  octx.clearRect(0, 0, W, H);
+  dessinerOeil(W / 2 - gap + ox, H / 2 + oy + respiration, w, h, -1);
+  dessinerOeil(W / 2 + gap + ox, H / 2 + oy + respiration, w, h, +1);
+
+  // fond noir + lueur autour des yeux
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+  ctx.shadowColor = '#00d8ff';
+  ctx.shadowBlur = 45 * dpr;
+  ctx.drawImage(off, 0, 0);
+  ctx.shadowBlur = 14 * dpr;
+  ctx.drawImage(off, 0, 0);
+  ctx.shadowBlur = 0;
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Plus tard : le cerveau Python enverra {emotion, texte} par WebSocket
+// const ws = new WebSocket('ws://localhost:8765');
+// ws.onmessage = e => { const m = JSON.parse(e.data); setEmotion(m.emotion, 3000); };
+</script>
+</body>
+</html>
